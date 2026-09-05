@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Environment & Secrets (严格隔离本地配置与大模型密钥)
+.env
+.env.local
+.env.*.local
+data/
+backend/data/
+llm_settings.json
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Logs & DB
+*.log
+*.sqlite
+*.sqlite3
+pgdata/
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
+.trae/

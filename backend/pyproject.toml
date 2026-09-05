@@ -1,0 +1,19 @@
+[project]
+name = "tcm-agent-system"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic-settings==2.7.1",
+  "python-multipart==0.0.20",
+  "python-jose[cryptography]==3.3.0",
+  "pwdlib[argon2]==0.2.1",
+  "sqlalchemy==2.0.36",
+  "asyncpg==0.30.0",
+  "httpx==0.28.1",
+  "hermes-agent==0.15.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
