@@ -26,6 +26,15 @@ FOLLOWUP_SCHEMA = (
 )
 
 
+
+def _load_nihaixia_context(facts: dict[str, Any]) -> str:
+    return """
+【倪海厦学术背景提示】：
+核心纲领：1. 凡病首辨六经传变（太阳-少阳-阳明-太阴-少阴-厥阴）；2. 极度看重手足温凉（脚热则心脏阳气足，脚冷则下焦虚寒）；
+3. 饮食二便与睡眠是阳气运行的晴雨表；4. 治法首选汉唐经方，用药直指病机。
+表述请带有倪师亲传特色：开宗明义点破六经与寒热，给出确切经方方证。
+"""
+
 def format_facts(facts: dict[str, Any]) -> str:
     lines = [f"- {key}: {value}" for key, value in facts.items() if value and value != "不确定"]
     return "\n".join(lines) if lines else "（患者尚未提供有效信息）"

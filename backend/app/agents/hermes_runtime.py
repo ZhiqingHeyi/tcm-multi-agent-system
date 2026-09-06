@@ -12,6 +12,7 @@ SCHOOL_NOTES = {
     School.PIWEI: "脾胃视角：重中气升降，补后天以养四旁，方药甘温为主。",
     School.HUOSHEN: "扶阳视角：重阳气，然须有确切寒象方谈扶阳，附子类有毒须医师复核。",
     School.INTEGRATIVE: "汇通视角：建议结合现代检查指标，辨病与辨证相互印证。",
+    School.NIHAIXIA: "倪师经方视角：万病不离阳气虚衰与阴阳开阖，首辨六经归属，直取经方。",
 }
 
 SCHOOL_OVERRIDES: dict[tuple[str, School], tuple[str, str]] = {
@@ -25,6 +26,9 @@ SCHOOL_OVERRIDES: dict[tuple[str, School], tuple[str, str]] = {
     ("胃热倾向", School.WENBING): ("清胃生津，护养阴液", "清胃散类方（医师复核）"),
     ("胃热倾向", School.HUOSHEN): ("确有实火方可清降，须辨真寒假热", "暂以清热和胃为先（医师复核）"),
     ("胃热倾向", School.PIWEI): ("清胃而不伤中，顾护脾胃", "益胃汤类方（医师复核）"),
+    ("脾胃阳虚倾向", School.NIHAIXIA): ("温补中焦阳气，建中御外", "理中汤或小建中汤类方（医师复核）"),
+    ("脾气不足倾向", School.NIHAIXIA): ("补足中焦，建运化之机", "四君子合小建中意（医师复核）"),
+    ("胃热倾向", School.NIHAIXIA): ("清阳明之经热，透热出表", "白虎汤或竹叶石膏汤意（医师复核）"),
 }
 
 

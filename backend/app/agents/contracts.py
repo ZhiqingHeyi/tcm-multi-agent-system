@@ -9,6 +9,7 @@ class School(StrEnum):
     PIWEI = "piwei"
     HUOSHEN = "huoshen"
     INTEGRATIVE = "integrative"
+    NIHAIXIA = "nihaixia"
 
 
 class AgentEvent(BaseModel):
