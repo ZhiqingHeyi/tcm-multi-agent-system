@@ -11,6 +11,8 @@ from ..agents.contracts import School
 from ..agents.personas import SCHOOL_PROFILES
 from ..domain.diagnosis.rules import scan_risk
 from ..domain.questionnaire import QUESTIONNAIRE, TOTAL_QUESTIONS
+from ..rag.ingest import ingest as rag_ingest
+from ..rag.store import count_chunks, hybrid_search
 from ..security import create_access_token, hash_password, verify_password
 from .. import settings_store
 
@@ -138,3 +140,37 @@ async def test_llm(payload: TestInput = TestInput(), x_admin_token: str | None =
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"{role} 模型调用失败：{exc}") from exc
     return {"ok": True, "replies": replies}
+
+
+class RagSearchInput(BaseModel):
+    query: str
+    school: str | None = None
+    top_k: int = 4
+
+
+@router.get("/rag/status")
+async def rag_status() -> dict[str, Any]:
+    try:
+        total = await count_chunks()
+    except Exception:
+        total = 0
+    return {"chunks": total, "enabled": total > 0}
+
+
+@router.post("/admin/rag/ingest")
+async def admin_rag_ingest(schools: list[str] | None = None, x_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_admin(x_admin_token)
+    result = await rag_ingest(schools)
+    return {"ok": True, **result}
+
+
+@router.post("/rag/search")
+async def rag_search(payload: RagSearchInput) -> dict[str, Any]:
+    schools = [payload.school] if payload.school else None
+    results = await hybrid_search(payload.query, top_k=payload.top_k, schools=schools)
+    return {
+        "results": [
+            {"content": item.content, "source": item.source, "section": item.section, "score": round(item.score, 4), "method": item.method}
+            for item in results
+        ]
+    }

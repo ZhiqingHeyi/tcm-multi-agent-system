@@ -20,6 +20,12 @@ export type QuestionModule = {
   questions: Question[]
 }
 
+export type Citation = {
+  source: string
+  section: string
+  method: string
+}
+
 export type AgentOpinion = {
   school: string
   name: string
@@ -32,6 +38,7 @@ export type AgentOpinion = {
   treatment: string
   formula: string | null
   differentiation: string
+  citations?: Citation[]
   source: string
 }
 
@@ -47,6 +54,7 @@ export type FinalReport = {
   divergence: string[]
   cautions: string[]
   followup: string[]
+  references?: string[]
   evidence: string[]
   risk_flags: string[]
   panel: AgentOpinion[]

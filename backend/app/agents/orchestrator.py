@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from ..domain.diagnosis.rules import score_candidates
+from ..rag.store import Retrieved, hybrid_search
 from . import llm
 from .contracts import School
 from .personas import SCHOOL_PROFILES, SCHOOL_PROMPTS, INTEGRATOR_PROMPT
@@ -40,19 +41,42 @@ def format_facts(facts: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "（患者尚未提供有效信息）"
 
 
+def format_context(items: list[Retrieved]) -> str:
+    if not items:
+        return ""
+    lines = []
+    for index, item in enumerate(items, start=1):
+        lines.append(f"[{index}] （{item.source}·{item.section}）{item.content}")
+    return "\n【经典与医案参考】\n" + "\n---\n".join(lines)
+
+
+def context_citations(items: list[Retrieved]) -> list[dict[str, str]]:
+    return [{"source": item.source, "section": item.section, "method": item.method} for item in items]
+
+
+async def retrieve_knowledge(query: str, school: School) -> list[Retrieved]:
+    try:
+        return await hybrid_search(query, schools=[school.value])
+    except Exception:
+        return []
+
+
 async def analyze_school(school: School, facts: dict[str, Any], risk_flags: list[str]) -> dict[str, Any]:
     if not llm.is_configured():
         return _rule_fallback(school, facts)
     risk_note = f"\n注意：已检测到风险信号 {risk_flags}，如涉及请优先建议就医。" if risk_flags else ""
-    prompt = f"患者四诊信息：\n{format_facts(facts)}{risk_note}\n\n请从你所属学派辨证。{SCHEMA_HINT}"
+    context = await retrieve_knowledge(format_facts(facts), school)
+    context_block = format_context(context)
+    prompt = f"患者四诊信息：\n{format_facts(facts)}{risk_note}{context_block}\n\n请从你所属学派辨证，可引用上方经典与医案作为依据（以「出处·小节」形式提及）。{SCHEMA_HINT}"
     try:
         data = await llm.chat_json(SCHOOL_PROMPTS[school], prompt, temperature=0.3)
     except LLM_ERRORS:
         return _rule_fallback(school, facts)
-    return _normalize_school(school, data)
+    return _normalize_school(school, data, context)
 
 
-def _normalize_school(school: School, data: dict[str, Any]) -> dict[str, Any]:
+
+def _normalize_school(school: School, data: dict[str, Any], context: list[Retrieved] | None = None) -> dict[str, Any]:
     profile = SCHOOL_PROFILES[school]
     return {
         "school": school.value,
@@ -66,6 +90,7 @@ def _normalize_school(school: School, data: dict[str, Any]) -> dict[str, Any]:
         "treatment": str(data.get("treatment") or ""),
         "formula": (str(data["formula"]) if data.get("formula") else None),
         "differentiation": str(data.get("differentiation") or ""),
+        "citations": context_citations(context or []),
         "source": "llm",
     }
 
@@ -98,21 +123,27 @@ def _as_list(value: Any) -> list[str]:
 
 
 async def run_panel(facts: dict[str, Any], risk_flags: list[str]) -> list[dict[str, Any]]:
-    results = await asyncio.gather(*(analyze_school(school, facts, risk_flags) for school in School))
-    return list(results)
+    results: list[dict[str, Any]] = []
+    for index, school in enumerate(School):
+        if index:
+            await asyncio.sleep(0.8)
+        results.append(await analyze_school(school, facts, risk_flags))
+    return results
 
 
 async def integrate(facts: dict[str, Any], panel: list[dict[str, Any]], risk_flags: list[str]) -> dict[str, Any]:
     if not llm.is_configured():
         return _rule_integrate(facts, panel, risk_flags)
+    context = await retrieve_knowledge(f"{format_facts(facts)}\n各学派辨证：{panel[0].get('diagnosis', '')}", panel[0].get("school", "shanghan"))
     payload = json.dumps(panel, ensure_ascii=False)
     prompt = (
         f"患者信息：\n{format_facts(facts)}\n\n各学派会诊意见：\n{payload}\n\n"
+        + format_context(context) + "\n\n"
         + (f"已检测到风险信号 {risk_flags}，最终结论应突出就医建议。" if risk_flags else "")
         + "请只输出 JSON：{\"diagnosis\":主证型, \"confidence\":0到1, \"mechanism\":病机, "
         "\"treatment\":治法, \"formula\":代表方(仅供医师复核)或None, \"modifications\":加减建议, "
         "\"consensus\":[学派共识], \"divergence\":[学派分歧], \"cautions\":[注意与就医建议], "
-        "\"followup\":[建议补充的问诊]}"
+        "\"followup\":[建议补充的问诊], \"references\":[引用的经典或医案出处]}"
     )
     try:
         data = await llm.chat_json(INTEGRATOR_PROMPT, prompt, temperature=0.3)
@@ -133,6 +164,7 @@ async def integrate(facts: dict[str, Any], panel: list[dict[str, Any]], risk_fla
         "divergence": _as_list(data.get("divergence")),
         "cautions": _as_list(data.get("cautions")) or ["本结论仅供健康参考，方药须执业中医师复核"],
         "followup": _as_list(data.get("followup")),
+        "references": _as_list(data.get("references")) or context_citations(context),
         "risk_flags": risk_flags,
         "evidence": [f"{k}：{v}" for k, v in facts.items() if v and v != "不确定"],
     }

@@ -660,6 +660,14 @@ export function App() {
                           ))}
                         </div>
                       )}
+                      {finalReport.references && finalReport.references.length > 0 && (
+                        <div className="text-xs space-y-1.5 pt-2 border-t border-[#E6D7B5] mt-3 pt-3">
+                          <span className="font-bold text-[#58634D]">◈ 经典引据（RAG 检索）：</span>
+                          {finalReport.references.map((r, i) => (
+                            <p key={i} className="text-[#594939] pl-3 leading-relaxed">[{i + 1}] {r}</p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -734,6 +742,11 @@ export function App() {
                       <div className="border-t border-[#E0D0B0] pt-3 space-y-1 font-serif">
                         <p className="font-semibold text-[#27251F]">治法：{op.treatment}</p>
                         <p className="text-[#9B4B3E] font-bold">方药：{op.formula || '随症斟酌'}</p>
+                        {op.citations && op.citations.length > 0 && (
+                          <p className="text-[10px] text-[#58634D] pt-1">
+                            引据：{op.citations.slice(0, 2).map((c) => `${c.source}·${c.section}`.slice(0, 24)).join('；')}
+                          </p>
+                        )}
                       </div>
                     </div>
                   ))}

@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     llm_model_pro: str = "deepseek-v4-pro-0813"
     vision_api_key: str = ""
     vision_model: str = "gpt-4o-mini"
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+    embedding_dim: int = 1024
+    rag_top_k: int = 4
     admin_token: str = "tcm-admin"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

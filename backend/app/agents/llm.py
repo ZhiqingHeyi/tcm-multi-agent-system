@@ -34,14 +34,14 @@ async def chat(system_prompt: str, user_prompt: str, temperature: float = 0.4, m
         "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=15.0)) as client:
         response = await client.post(_endpoint(), headers=_headers(), json=payload)
         response.raise_for_status()
         data = response.json()
     return (data["choices"][0]["message"]["content"] or "").strip()
 
-async def chat_json(system_prompt: str, user_prompt: str, temperature: float = 0.3, role: str = "pro") -> dict:
-    raw = await chat(system_prompt, user_prompt, temperature=temperature, role=role)
+async def chat_json(system_prompt: str, user_prompt: str, temperature: float = 0.3, role: str = "pro", max_tokens: int = 2400) -> dict:
+    raw = await chat(system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens, role=role)
     return parse_json_block(raw)
 
 def parse_json_block(raw: str) -> dict:
