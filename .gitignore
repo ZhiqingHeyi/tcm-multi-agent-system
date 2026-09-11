@@ -16,6 +16,8 @@ venv/
 data/
 backend/data/
 llm_settings.json
+.venv-knowledge/
+知识库原始未处理下载文档/
 
 # Build outputs
 dist/

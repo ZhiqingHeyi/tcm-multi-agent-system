@@ -12,6 +12,8 @@ from .personas import SCHOOL_PROFILES, SCHOOL_PROMPTS, INTEGRATOR_PROMPT
 
 LLM_ERRORS = (llm.LLMUnavailable, httpx.HTTPError, ValueError, KeyError, IndexError, TimeoutError)
 
+ROLE_LABEL = {"classic": "典籍原文", "case": "医案实录", "lecture": "讲义论述"}
+
 SCHEMA_HINT = (
     "请只输出 JSON，结构为："
     "{\"diagnosis\": 证型名称, \"confidence\": 0到1的小数, "
@@ -41,17 +43,42 @@ def format_facts(facts: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "（患者尚未提供有效信息）"
 
 
-def format_context(items: list[Retrieved]) -> str:
+def format_context(items: list[Retrieved], max_items: int = 6, max_chars: int = 3600) -> str:
+    """把检索结果组织成提示词上下文。
+
+    两个约束：条数上限（避免上下文淹没四诊事实）与总字数上限（控制 token 成本）。
+    引用格式统一为「书名·章节」，让模型能原样回引，也方便前端溯源展示。
+    """
     if not items:
         return ""
-    lines = []
-    for index, item in enumerate(items, start=1):
-        lines.append(f"[{index}] （{item.source}·{item.section}）{item.content}")
+    lines: list[str] = []
+    budget = max_chars
+    for index, item in enumerate(items[:max_items], start=1):
+        label = f"{item.title}·{item.section}" if item.title else item.section
+        snippet = item.content[:900]
+        if budget - len(snippet) < 0:
+            break
+        budget -= len(snippet)
+        lines.append(f"[{index}] （{label}｜{ROLE_LABEL.get(item.role, item.role)}）{snippet}")
+    if not lines:
+        return ""
     return "\n【经典与医案参考】\n" + "\n---\n".join(lines)
 
 
-def context_citations(items: list[Retrieved]) -> list[dict[str, str]]:
-    return [{"source": item.source, "section": item.section, "method": item.method} for item in items]
+def context_citations(items: list[Retrieved], limit: int = 4) -> list[dict[str, str]]:
+    citations: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        label = f"{item.title}·{item.section}" if item.title else item.section
+        if label in seen:
+            continue
+        seen.add(label)
+        citations.append(
+            {"source": item.title or item.source, "section": item.section, "label": label, "method": item.method}
+        )
+        if len(citations) >= limit:
+            break
+    return citations
 
 
 async def retrieve_knowledge(query: str, school: School) -> list[Retrieved]:

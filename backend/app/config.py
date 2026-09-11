@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     embedding_dim: int = 1024
     rag_top_k: int = 4
+    rag_rerank: bool = True
     admin_token: str = "tcm-admin"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
