@@ -218,10 +218,14 @@ def _filter_sql(
 
 
 async def vector_search(
-    query: str, top_k: int, schools: list[str] | None = None, roles: list[str] | None = None
+    query: str,
+    top_k: int,
+    schools: list[str] | None = None,
+    roles: list[str] | None = None,
+    with_common: bool = True,
 ) -> list[Retrieved]:
     [query_vector] = await embed([query])
-    where, params = _filter_sql(schools, roles)
+    where, params = _filter_sql(schools, roles, with_common=with_common)
     params.update({"query": json.dumps(query_vector), "limit": top_k})
     statement = sql_text(
         "SELECT content, school, source, section, title, role,"
@@ -273,6 +277,7 @@ async def keyword_search(
     schools: list[str] | None = None,
     roles: list[str] | None = None,
     candidate_limit: int = 800,
+    with_common: bool = True,
 ) -> list[Retrieved]:
     """稀疏通道：GIN 索引下推候选生成 → 应用层精确 BM25 打分。
 
@@ -283,7 +288,7 @@ async def keyword_search(
     tsquery = " | ".join(to_bigrams(query).split()[:80])
     if not tsquery:
         return []
-    where, params = _filter_sql(schools, roles)
+    where, params = _filter_sql(schools, roles, with_common=with_common)
     extra = " AND " if where else " WHERE "
     params.update({"tsq": tsquery, "limit": candidate_limit})
     statement = sql_text(
@@ -312,24 +317,97 @@ async def keyword_search(
 # --------------------------------------------------------------------------
 # 融合
 # --------------------------------------------------------------------------
-def reciprocal_rank_fusion(ranked_lists: list[list[str]], k: int = _RRF_K) -> dict[str, float]:
+def reciprocal_rank_fusion(
+    ranked_lists: list[list[str]], k: int = _RRF_K, weights: list[float] | None = None
+) -> dict[str, float]:
+    """加权 RRF。weights 为各通道可信度系数，默认等权（保持向后兼容）。
+
+    等权 RRF 的隐含假设是"两条通道一样准"。评测数据否定了这个假设：
+    稀疏通道单独召回率明显低于稠密通道，等权会让它的噪声排名挤掉稠密的正确结果。
+    """
+    weights = weights or [1.0] * len(ranked_lists)
     fused: dict[str, float] = {}
-    for ranked in ranked_lists:
+    for weight, ranked in zip(weights, ranked_lists):
         for position, key in enumerate(ranked, start=1):
-            fused[key] = fused.get(key, 0.0) + 1.0 / (k + position)
+            fused[key] = fused.get(key, 0.0) + weight / (k + position)
     return fused
+
+
+async def random_chunks(
+    limit: int,
+    schools: list[str] | None = None,
+    roles: list[str] | None = None,
+    with_common: bool = True,
+) -> list[Retrieved]:
+    """在检索允许的范围内均匀随机抽样。
+
+    评测用的随机基线必须**从全量语料采样**，而不是从检索结果的候选池里打乱。
+    候选池本身就经过相关性筛选，打乱后仍会命中，会得出"随机基线 62.5%"这种
+    荒谬结论，让可失败性检验彻底失效。
+    """
+    where, params = _filter_sql(schools, roles, with_common=with_common)
+    params["limit"] = limit
+    statement = sql_text(
+        "SELECT content, school, source, section, title, role"
+        f" FROM knowledge_chunks{where} ORDER BY random() LIMIT :limit"
+    )
+    async with SessionLocal() as session:
+        rows = (await session.execute(statement, params)).mappings().all()
+    return [
+        Retrieved(row["content"], row["school"], row["source"], row["section"], 0.0, "random", row["title"], row["role"])
+        for row in rows
+    ]
+
+
+async def _fused_search(
+    query: str, limit: int, schools: list[str] | None, roles: list[str] | None, with_common: bool
+) -> list[Retrieved]:
+    """单层内的双通道召回 + 加权 RRF 融合。"""
+    candidates = max(limit * 4, 16)
+    vector_results = await vector_search(query, candidates, schools, roles, with_common=with_common)
+    keyword_results = await keyword_search(query, candidates, schools, roles, with_common=with_common)
+
+    by_key: dict[str, Retrieved] = {}
+    for item in vector_results + keyword_results:
+        by_key.setdefault(item.key, item)
+    fused = reciprocal_rank_fusion(
+        [[item.key for item in vector_results], [item.key for item in keyword_results]],
+        weights=[1.0, settings.rag_sparse_weight],
+    )
+    vector_keys = {item.key for item in vector_results}
+    keyword_keys = {item.key for item in keyword_results}
+
+    merged: list[Retrieved] = []
+    for key, score in fused.items():
+        base = by_key[key]
+        if key in vector_keys and key in keyword_keys:
+            method = "hybrid"
+        elif key in keyword_keys:
+            method = "keyword"
+        else:
+            method = "vector"
+        merged.append(
+            Retrieved(base.content, base.school, base.source, base.section, score, method, base.title, base.role)
+        )
+    merged.sort(key=lambda item: -item.score)
+    return merged[:limit]
 
 
 # --------------------------------------------------------------------------
 # LLM 精排（cross-encoder 效应）
 # --------------------------------------------------------------------------
-async def llm_rerank(query: str, items: list[Retrieved], top_k: int) -> list[Retrieved]:
-    if len(items) <= top_k or not settings.rag_rerank:
-        return items[:top_k]
+async def _rerank_all(query: str, items: list[Retrieved]) -> list[Retrieved]:
+    """对候选全量做 LLM 精排并返回完整重排序列（不截断）。
+
+    分层配额必须在精排之后施加：若先按扁平排名截断再配额，等于让"共享层挤占"
+    这个错误排名先决定了候选池，配额就救不回来了。
+    """
+    if len(items) <= 1 or not settings.rag_rerank:
+        return items
     from ..agents import llm as llm_module
 
     if not llm_module.is_configured():
-        return items[:top_k]
+        return items
 
     cache_key = hashlib.blake2b(
         (query + "|" + "|".join(item.key for item in items)).encode("utf-8"), digest_size=16
@@ -359,14 +437,20 @@ async def llm_rerank(query: str, items: list[Retrieved], top_k: int) -> list[Ret
             order = [int(value) for value in raw if isinstance(value, (int, float, str)) and str(value).isdigit()]
             order = [index for index in order if 0 <= index < len(items)]
         except Exception:  # noqa: BLE001 - 精排失败不能影响主链路
-            return items[:top_k]
+            return items
         _RERANK_CACHE[cache_key] = order
         if len(_RERANK_CACHE) > 512:
             _RERANK_CACHE.pop(next(iter(_RERANK_CACHE)))
 
     ranked = [items[index] for index in order]
     ranked.extend(item for index, item in enumerate(items) if index not in set(order))
-    return ranked[:top_k]
+    return ranked
+
+
+async def llm_rerank(query: str, items: list[Retrieved], top_k: int) -> list[Retrieved]:
+    if len(items) <= top_k:
+        return items[:top_k]
+    return (await _rerank_all(query, items))[:top_k]
 
 
 async def hybrid_search(
@@ -375,35 +459,41 @@ async def hybrid_search(
     schools: list[str] | None = None,
     roles: list[str] | None = None,
     rerank: bool = True,
+    with_common: bool = True,
+    tiered: bool | None = None,
 ) -> list[Retrieved]:
+    """融合检索。tiered=True 启用分层配额，避免共享基础层挤占本派席位。
+
+    扁平并集过滤（tiered=False）的缺陷：common 层占语料约三分之一，而《景岳全书》
+    《医贯》这类泛中医典籍与本派典籍复用同一套术语（实测"补中益气+黄芪"在景岳全书
+    共现 25 块，仅 6 块出自脾胃论的《脾胃论》），Top-K 席位会被泛典占满，
+    本派权威典籍反而落榜，且精排样本也被污染。
+
+    分层配额把「本派」与「共享层」分开检索、各自融合排序，精排后再按席位合并：
+    本派占 top_k - quota 席，共享层保底 quota 席。
+    """
     top_k = top_k or settings.rag_top_k
-    candidates = max(top_k * 4, 16)
-    vector_results = await vector_search(query, candidates, schools, roles)
-    keyword_results = await keyword_search(query, candidates, schools, roles)
+    tiered = settings.rag_tiered if tiered is None else tiered
+    quota = max(min(settings.rag_common_quota, top_k - 1), 0)
+    layered = bool(tiered and quota and schools and with_common and COMMON_SCHOOL not in schools)
 
-    by_key: dict[str, Retrieved] = {}
-    for item in vector_results + keyword_results:
-        by_key.setdefault(item.key, item)
-    fused = reciprocal_rank_fusion(
-        [[item.key for item in vector_results], [item.key for item in keyword_results]]
-    )
-    vector_keys = {item.key for item in vector_results}
-    keyword_keys = {item.key for item in keyword_results}
+    if not layered:
+        pool = top_k if not rerank else max(top_k * 4, 16)
+        merged = await _fused_search(query, pool, schools, roles, with_common)
+        if not rerank:
+            return merged[:top_k]
+        return await llm_rerank(query, merged, top_k)
 
-    merged: list[Retrieved] = []
-    for key, score in fused.items():
-        base = by_key[key]
-        if key in vector_keys and key in keyword_keys:
-            method = "hybrid"
-        elif key in keyword_keys:
-            method = "keyword"
-        else:
-            method = "vector"
-        merged.append(
-            Retrieved(base.content, base.school, base.source, base.section, score, method, base.title, base.role)
-        )
-    merged.sort(key=lambda item: -item.score)
+    own_pool = await _fused_search(query, max(top_k * 4, 16), schools, roles, with_common=False)
+    shared_pool = await _fused_search(query, max(quota * 4, 8), [COMMON_SCHOOL], roles, with_common=False)
+    candidates = own_pool + shared_pool
+    if rerank:
+        candidates = await _rerank_all(query, candidates)
 
-    if not rerank:
-        return merged[:top_k]
-    return await llm_rerank(query, merged[: candidates], top_k)
+    own_items = [item for item in candidates if item.school != COMMON_SCHOOL]
+    shared_items = [item for item in candidates if item.school == COMMON_SCHOOL]
+    result = own_items[: top_k - quota] + shared_items[:quota]
+    if len(result) < top_k:
+        leftover = own_items[top_k - quota :] + shared_items[quota:]
+        result.extend(leftover[: top_k - len(result)])
+    return result[:top_k]
