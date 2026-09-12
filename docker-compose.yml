@@ -24,6 +24,12 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       VISION_API_KEY: ${VISION_API_KEY:-}
       VISION_MODEL: ${VISION_MODEL:-gpt-4o-mini}
+      # 本地 GPU 向量化服务（宿主机跑 tools/embed_server.py，Apple Silicon MPS）。
+      # Docker on macOS 拿不到 GPU，所以服务必须跑在宿主机，容器经 host.docker.internal 调用。
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://host.docker.internal:8100/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-local}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
     ports:
       - "8001:8000"
     volumes:

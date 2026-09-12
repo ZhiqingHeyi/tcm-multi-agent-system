@@ -7,7 +7,9 @@ __pycache__/
 .Python
 env/
 venv/
-.venv/
+.venv*/
+.venv-knowledge/
+.venv-embed/
 
 # Environment & Secrets (严格隔离本地配置与大模型密钥)
 .env

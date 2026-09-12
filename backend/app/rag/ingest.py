@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunker import document_to_chunks
-from .embeddings import is_remote_configured
+from .embeddings import embedder_id, is_remote_configured
 from .store import count_chunks, prune_source, source_stats, sweep_orphan_sources, upsert_chunks
 
 # 切分策略版本：改动 chunker 的边界规则或长度参数时必须递增，否则增量会漏更新
@@ -94,8 +94,15 @@ class IngestSummary:
 
 
 def _fingerprint(text: str) -> str:
+    """内容指纹 = 切分策略版本 + 向量化空间标识 + 文本。
+
+    必须把 embedder_id 算进去：换 embedding 模型后块文本本身没变，
+    若指纹不含模型标识，增量入库会把全部文档判为"未变更"而静默跳过，
+    结果库里全是旧向量空间的向量，检索质量劣化且极难察觉。
+    """
     hasher = hashlib.blake2b(digest_size=16)
     hasher.update(CHUNKER_VERSION.encode())
+    hasher.update(embedder_id().encode())
     hasher.update(text.encode("utf-8"))
     return hasher.hexdigest()
 

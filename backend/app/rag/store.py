@@ -35,7 +35,7 @@ from sqlalchemy import text as sql_text
 from ..config import settings
 from ..db.session import SessionLocal
 from .chunker import Chunk
-from .embeddings import embed
+from .embeddings import embed, embed_documents, embed_query
 
 _K1 = 1.5
 _B = 0.75
@@ -107,7 +107,8 @@ def tokenize(text: str) -> list[str]:
 async def upsert_chunks(chunks: list[Chunk]) -> int:
     if not chunks:
         return 0
-    vectors = await embed([chunk.text for chunk in chunks])
+    vectors = await embed_documents([chunk.text for chunk in chunks])
+    marker = settings.embedder_id[:80]
     rows = [
         {
             "school": chunk.school,
@@ -119,17 +120,19 @@ async def upsert_chunks(chunks: list[Chunk]) -> int:
             "content": chunk.text,
             "content_bigrams": to_bigrams(chunk.text)[:20000],
             "embedding": json.dumps(vector),
+            "embedder_id": marker,
             "token_key": chunk.token_key[:640],
         }
         for chunk, vector in zip(chunks, vectors, strict=True)
     ]
     statement = sql_text(
         "INSERT INTO knowledge_chunks"
-        " (school, source, section, title, role, chunk_index, content, content_bigrams, embedding, token_key)"
+        " (school, source, section, title, role, chunk_index, content, content_bigrams, embedding, embedder_id, token_key)"
         " VALUES (:school, :source, :section, :title, :role, :chunk_index, :content,"
-        " CAST(:content_bigrams AS text), CAST(:embedding AS vector), :token_key)"
+        " CAST(:content_bigrams AS text), CAST(:embedding AS vector), :embedder_id, :token_key)"
         " ON CONFLICT (token_key) DO UPDATE SET"
         "   embedding = EXCLUDED.embedding,"
+        "   embedder_id = EXCLUDED.embedder_id,"
         "   content_bigrams = EXCLUDED.content_bigrams,"
         "   title = EXCLUDED.title,"
         "   role = EXCLUDED.role,"
@@ -217,6 +220,16 @@ def _filter_sql(
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+def _embedder_clause(where: str) -> str:
+    """只召回与当前向量化模型同源的块。
+
+    换 embedding 模型等于换向量空间：旧向量与新查询向量算余弦是纯噪声，
+    而且不报错，只会表现为"召回莫名变差"。用 embedder_id 硬隔离，
+    宁可暂时查不到，也不返回错答案。稀疏通道（BM25）与模型无关，不需要过滤。
+    """
+    return where + (" AND " if where else " WHERE ") + "embedder_id = :embedder"
+
+
 async def vector_search(
     query: str,
     top_k: int,
@@ -224,9 +237,10 @@ async def vector_search(
     roles: list[str] | None = None,
     with_common: bool = True,
 ) -> list[Retrieved]:
-    [query_vector] = await embed([query])
+    query_vector = await embed_query(query)
     where, params = _filter_sql(schools, roles, with_common=with_common)
-    params.update({"query": json.dumps(query_vector), "limit": top_k})
+    where = _embedder_clause(where)
+    params.update({"query": json.dumps(query_vector), "limit": top_k, "embedder": settings.embedder_id[:80]})
     statement = sql_text(
         "SELECT content, school, source, section, title, role,"
         " 1 - (embedding <=> CAST(:query AS vector)) AS similarity"

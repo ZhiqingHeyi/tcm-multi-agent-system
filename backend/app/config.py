@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = ""
     embedding_dim: int = 1024
+    # BGE / E5 这类模型要求给「查询」加指令前缀，文档侧不加；漏掉会明显掉召回，
+    # 且表现为"换了模型但效果没变"，极难排查。bge-m3 无需前缀，留空即可。
+    embedding_query_prefix: str = ""
+    embedding_passage_prefix: str = ""
     rag_top_k: int = 4
     rag_rerank: bool = True
     # 稀疏通道在 RRF 融合中的权重。评测显示稀疏通道单独召回率显著低于稠密通道，
@@ -28,6 +32,17 @@ class Settings(BaseSettings):
     admin_token: str = "tcm-admin"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def embedder_id(self) -> str:
+        """向量空间标识：模型 + 维度。
+
+        换 embedding 模型等于换向量空间，旧向量与新查询向量算余弦是纯噪声且不报错。
+        把这个标识随块落库并在检索时硬过滤，是"宁可查不到也不给错答案"的护栏。
+        """
+        if not self.embedding_model:
+            return f"local-hash@{self.embedding_dim}"
+        return f"{self.embedding_model}@{self.embedding_dim}"
 
 settings = Settings()
 BACKEND_DIR = Path(__file__).resolve().parents[1]

@@ -1,16 +1,19 @@
 """向量化层。
 
-现实约束：当前接入的 OpenAI 兼容网关只开放了对话模型，没有 embedding 模型
-（实测 /v1/models 仅 2 个 chat 模型，embedding 调用返回权限错误）。
-因此这里采用「远程优先 + 本地兜底」的双通道设计：
+支持三种模式，靠配置切换，代码零改动：
 
-- 配置了 embedding 模型（settings.embedding_model）时走远程 API；
-- 否则使用本地哈希向量化（hashing vectorizer）。
+1. **本地 GPU 服务**（推荐）：宿主机跑 tools/embed_server.py（Apple Silicon MPS），
+   EMBEDDING_BASE_URL 指向 http://host.docker.internal:8100/v1 即可。
+   之所以放宿主机，是因为 Docker Desktop on macOS 无法把 Metal GPU 透传给容器。
+2. **云端 embedding API**：任何 OpenAI 兼容的 /v1/embeddings 供应商。
+3. **本地哈希兜底**：未配置 embedding 模型时自动启用。
 
-本地向量的定位要说清楚：它**不是**语义嵌入，而是一个带次线性词频加权的
-哈希词袋向量。它提供的是"字面近似"的召回通道。系统的精确召回主要交给
-稀疏侧（bigram BM25 + GIN 索引）和后续的 LLM 重排，这是有意的架构分工：
-稠密侧给语义泛化，稀疏侧给方名条文精确匹配，LLM 重排做最终裁决。
+关于兜底模式必须说清楚：它**不是**语义嵌入，而是带次线性词频加权的哈希词袋向量，
+只提供"字面近似"召回。实测它在零关键词重叠的改写查询上召回率仅 20%，
+所以一旦接入真实 embedding，该指标应显著跃升——这也是验收接入是否成功的判据。
+
+完整的召回分工：稠密侧给语义泛化，稀疏侧（bigram BM25 + GIN）给方名条文精确匹配，
+LLM 重排做最终裁决。
 """
 
 from __future__ import annotations
@@ -122,17 +125,39 @@ def _fit_dim(vector: list[float]) -> list[float]:
 # --------------------------------------------------------------------------
 # 对外入口：分批 + 指数退避重试
 # --------------------------------------------------------------------------
-async def embed(texts: list[str]) -> list[list[float]]:
+async def embed(texts: list[str], prefix: str = "") -> list[list[float]]:
+    """向量化入口。prefix 只作用于远程通道。
+
+    本地哈希是词法向量，把「为这个句子生成表示以用于检索相关文章：」这类
+    中文指令前缀拼进去，反而会让指令本身进入词袋、污染向量，所以本地通道忽略 prefix。
+    """
     if not texts:
         return []
     if not is_remote_configured():
         return [local_hash_embedding(text) for text in texts]
 
+    payload = [f"{prefix}{text}" for text in texts] if prefix else texts
     vectors: list[list[float]] = []
-    for start in range(0, len(texts), BATCH_SIZE):
-        batch = texts[start : start + BATCH_SIZE]
+    for start in range(0, len(payload), BATCH_SIZE):
+        batch = payload[start : start + BATCH_SIZE]
         vectors.extend(await _embed_batch_with_retry(batch))
     return vectors
+
+
+async def embed_query(text: str) -> list[float]:
+    """查询侧向量化：带查询指令前缀（BGE/E5 需要，bge-m3 留空）。"""
+    [vector] = await embed([text], prefix=settings.embedding_query_prefix)
+    return vector
+
+
+async def embed_documents(texts: list[str]) -> list[list[float]]:
+    """文档侧向量化：不加查询前缀。非对称处理是这类模型的硬要求。"""
+    return await embed(texts, prefix=settings.embedding_passage_prefix)
+
+
+def embedder_id() -> str:
+    """当前向量空间标识，用于把"新旧向量混用"从根上挡掉。"""
+    return settings.embedder_id
 
 
 async def _embed_batch_with_retry(batch: list[str]) -> list[list[float]]:
