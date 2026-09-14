@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any
 from uuid import uuid4
@@ -26,6 +27,10 @@ class AuthInput(BaseModel):
 
 class CreateConsultation(BaseModel):
     school: School = School.PIWEI
+    chief_complaint: str = ""
+
+class IntakeInput(BaseModel):
+    chief_complaint: str = Field(min_length=2, max_length=2000)
 
 class FactsInput(BaseModel):
     facts: dict[str, Any] = Field(default_factory=dict)
@@ -67,11 +72,20 @@ async def list_agents() -> list[dict[str, str]]:
 async def questionnaire() -> dict[str, Any]:
     return {"modules": QUESTIONNAIRE, "total": TOTAL_QUESTIONS}
 
+@router.post("/intake/analyze")
+async def intake_analyze(payload: IntakeInput) -> dict[str, Any]:
+    """患者自由主诉预解析：先让用户说清哪里不舒服，再据此引导结构化问答。"""
+    return await orchestrator.analyze_intake(payload.chief_complaint)
+
 @router.post("/consultations")
 async def create_consultation(payload: CreateConsultation) -> dict[str, Any]:
     session_id = str(uuid4())
-    sessions[session_id] = {"school": payload.school.value, "facts": {}, "risk_flags": []}
-    return {"id": session_id, "school": payload.school.value}
+    facts: dict[str, Any] = {}
+    complaint = payload.chief_complaint.strip()
+    if complaint:
+        facts["主诉"] = complaint
+    sessions[session_id] = {"school": payload.school.value, "facts": facts, "risk_flags": []}
+    return {"id": session_id, "school": payload.school.value, "chief_complaint": complaint}
 
 @router.get("/consultations/{consultation_id}")
 async def get_consultation(consultation_id: str) -> dict[str, Any]:
@@ -105,10 +119,35 @@ async def report_stream(consultation_id: str, payload: FactsInput | None = None)
         yield sse("stage_started", {"stage": "orchestrator", "message": "主控收集四诊信息，准备会诊"})
         if risk_flags:
             yield sse("risk_detected", {"stage": "safety", "message": "检测到需优先就医的信号", "flags": risk_flags})
-        yield sse("stage_started", {"stage": "panel", "message": "五位学派医家正在并行辨证…"})
-        panel = await orchestrator.run_panel(facts, risk_flags)
-        for result in panel:
-            yield sse("agent_result", {"stage": "panel", **result})
+        yield sse("stage_started", {"stage": "panel", "message": "六位学派医家正在并行辨证…"})
+
+        panel: list[dict[str, Any]] = []
+        gateway_errors = 0
+
+        async def panel_stream():
+            nonlocal gateway_errors
+            async for result in orchestrator.run_panel_stream(facts, risk_flags):
+                if result.get("source") == "rule":
+                    gateway_errors += 1
+                panel.append(result)
+                yield sse("agent_result", {"stage": "panel", **result})
+
+        # 流式产出六派结果，同时每 15 秒发心跳防止浏览器断连
+        streamer = panel_stream().__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(streamer.__anext__(), timeout=15.0)
+                yield chunk
+            except asyncio.TimeoutError:
+                yield f": heartbeat\n\n"
+            except StopAsyncIteration:
+                break
+
+        # 全部六派都失败时，明确告知用户而非继续整合空结果
+        if len(panel) > 0 and gateway_errors == len(panel):
+            yield sse("error", {"stage": "gateway", "message": "AI 模型服务暂时不可用，六派均未能完成辨证。请稍后重试。"})
+            return
+
         yield sse("stage_started", {"stage": "integrator", "message": "主控整合各家意见…"})
         final = await orchestrator.integrate(facts, panel, risk_flags)
         yield sse("report", {"stage": "integrator", **final, "panel": panel})

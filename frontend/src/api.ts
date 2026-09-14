@@ -49,7 +49,13 @@ export type FinalReport = {
   mechanism: string
   treatment: string
   formula: string | null
+  formula_detail: string
   modifications: string
+  acupressure: string
+  diet: string
+  lifestyle: string
+  emotional: string
+  precautions: string
   consensus: string[]
   divergence: string[]
   cautions: string[]
@@ -63,6 +69,15 @@ export type FinalReport = {
 export type FollowupResult = {
   questions: { title: string; key: string; options: string[] }[]
   ready: boolean
+}
+
+export type IntakeResult = {
+  engine: string
+  summary: string
+  clues: string[]
+  focus_modules: string[]
+  school: string
+  reason: string
 }
 
 export type LLMStatus = {
@@ -85,11 +100,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   agents: () => request<School[]>('/api/agents'),
   questionnaire: () => request<{ modules: QuestionModule[]; total: number }>('/api/questionnaire'),
-  createConsultation: (school: string) =>
-    request<{ id: string; school: string }>('/api/consultations', {
+  analyzeIntake: (chief_complaint: string) =>
+    request<IntakeResult>('/api/intake/analyze', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ school }),
+      body: JSON.stringify({ chief_complaint }),
+    }),
+  createConsultation: (school: string, chief_complaint = '') =>
+    request<{ id: string; school: string; chief_complaint: string }>('/api/consultations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ school, chief_complaint }),
     }),
   saveAnswers: (id: string, facts: Record<string, string>) =>
     request<{ saved: number; risk_flags: string[] }>(`/api/consultations/${id}/answers`, {
@@ -161,6 +182,7 @@ export async function streamReport(
         try {
           const parsed = JSON.parse(dataStr)
           if (event === 'stage_started') handlers.onStage?.(parsed.message || '')
+          else if (event === 'error') handlers.onError?.(new Error(parsed.message || '服务异常'))
           else if (event === 'agent_result') handlers.onAgentResult?.(parsed as AgentOpinion)
           else if (event === 'report') handlers.onReport?.(parsed as FinalReport)
         } catch {

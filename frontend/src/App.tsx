@@ -22,6 +22,7 @@ import {
   type FinalReport,
   type AgentOpinion,
   type LLMStatus,
+  type IntakeResult,
   streamReport
 } from './api'
 
@@ -29,6 +30,15 @@ type View = 'home' | 'selection' | 'questionnaire' | 'followup' | 'analyzing' | 
 
 export function App() {
   const [view, setView] = useState<View>('home')
+  const [homePhase, setHomePhase] = useState<'intro' | 'intake'>('intro')
+
+  // 自由主诉：先让患者说自己哪里不舒服
+  const [chiefComplaint, setChiefComplaint] = useState('')
+  const [intake, setIntake] = useState<IntakeResult | null>(null)
+  const [intakeLoading, setIntakeLoading] = useState(false)
+  const [intakeError, setIntakeError] = useState('')
+  const [locality, setLocality] = useState('郑州')
+
   const [schools, setSchools] = useState<School[]>([])
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null)
   const [sessionId, setSessionId] = useState('')
@@ -70,13 +80,36 @@ export function App() {
     }).catch(() => undefined)
   }, [])
 
+  const analyzeComplaint = async () => {
+    const text = chiefComplaint.trim()
+    if (text.length < 2) {
+      setIntakeError('请再多说几句，比如哪里不舒服、多久了、什么情况下加重。')
+      return
+    }
+    setIntakeLoading(true)
+    setIntakeError('')
+    try {
+      const res = await api.analyzeIntake(text)
+      setIntake(res)
+      setView('selection')
+    } catch {
+      setIntakeError('先生未能听清，请检查网络后再说一次。')
+    } finally {
+      setIntakeLoading(false)
+    }
+  }
+
   const startConsultation = async (school: School) => {
     setSelectedSchool(school)
-    setFacts({})
+    const complaint = chiefComplaint.trim()
+    const seed: Record<string, string> = {}
+    if (complaint) seed['主诉'] = complaint
+    if (locality.trim()) seed['常住地'] = locality.trim()
+    setFacts(seed)
     setCurrentModIdx(0)
     setCurrentQIdx(0)
     try {
-      const res = await api.createConsultation(school.id)
+      const res = await api.createConsultation(school.id, complaint)
       setSessionId(res.id)
       setView('questionnaire')
     } catch {
@@ -237,49 +270,167 @@ export function App() {
       {/* 正文中枢 */}
       <main className="flex-1 max-w-5xl w-full mx-auto p-6 md:p-10 flex flex-col justify-center relative z-10">
         <AnimatePresence mode="wait">
-          {/* 首页：竖排书卷 + 苍劲东方墨韵 */}
+          {/* 首页：分阶段揭示——先建立信任，再自然引导输入 */}
           {view === 'home' && (
             <motion.div
-              key="home"
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              className="py-12 flex flex-col items-center justify-center text-center space-y-10"
+              key="home-trust"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="max-w-3xl mx-auto w-full py-4"
             >
-              {/* 竖排对联装饰与主题 */}
-              <div className="flex items-center justify-center gap-10 md:gap-14 my-4">
-                <div className="writing-vertical text-xs tracking-[0.4em] text-[#7D6B55] border-r border-[#D2BF95] pr-4 select-none">
-                  上工治未病 · 察毫芒于未萌
-                </div>
-
-                <div className="space-y-6 max-w-xl">
-                  <div className="inline-block seal !w-auto !h-auto px-4 py-1.5 !rotate-0 text-sm tracking-widest font-semibold">
-                    御览四诊 · 辨证推求
+              {/* 第一幕：理念与信任 */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.8, ease: 'easeOut' }}
+                className="text-center space-y-6 py-8"
+              >
+                <div className="flex items-center justify-center gap-8 md:gap-12">
+                  <div className="writing-vertical text-xs tracking-[0.4em] text-[#7D6B55] border-r border-[#D2BF95] pr-4 select-none">
+                    上工治未病
                   </div>
-                  <h2 className="text-4xl md:text-6xl font-extrabold tracking-[0.18em] text-[#27251F] leading-tight font-serif">
-                    古法十问<br />
-                    <span className="text-[#9B4B3E]">学派合参</span>
-                  </h2>
-                  <p className="text-sm md:text-base text-[#5E4F3E] leading-relaxed tracking-wider">
-                    融汇伤寒六经、温病卫气营血、东垣脾胃升降、火神重阳扶阳、汇通中西互证。
-                    系统十问，智能随问，五大师承Agent同台辩难，共拟方药治则。
-                  </p>
+                  <div className="space-y-5">
+                    <div className="inline-block seal !w-auto !h-auto px-4 py-1.5 !rotate-0 text-sm tracking-widest font-semibold">
+                      御览四诊 · 辨证推求
+                    </div>
+                    <h2 className="text-4xl md:text-6xl font-extrabold tracking-[0.18em] text-[#27251F] leading-tight font-serif">
+                      古法十问<br />
+                      <span className="text-[#9B4B3E]">学派合参</span>
+                    </h2>
+                    <p className="text-sm md:text-base text-[#5E4F3E] leading-relaxed tracking-wider max-w-md">
+                      融汇伤寒六经、温病卫气营血、东垣脾胃升降、火神重阳扶阳、汇通中西互证。
+                      六大师承 Agent 同台辩难，共拟方药治则。
+                    </p>
+                  </div>
+                  <div className="writing-vertical text-xs tracking-[0.4em] text-[#7D6B55] border-l border-[#D2BF95] pl-4 select-none">
+                    审病机而立意
+                  </div>
                 </div>
 
-                <div className="writing-vertical text-xs tracking-[0.4em] text-[#7D6B55] border-l border-[#D2BF95] pl-4 select-none">
-                  见微以知著 · 审病机而立意
-                </div>
-              </div>
-
-              <div className="pt-4">
-                <button
-                  onClick={() => setView('selection')}
-                  className="ink-button text-base tracking-widest font-medium shadow-paper"
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6, duration: 0.5 }}
+                  onClick={() => setHomePhase('intake')}
+                  className="ink-button text-sm tracking-widest font-medium shadow-paper"
                 >
-                  <span>启卷 · 选择引诊先生</span>
+                  <span>开始问诊</span>
                   <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
+                </motion.button>
+              </motion.div>
+
+              {/* 第二幕：主诉输入（点击后展开） */}
+              <AnimatePresence>
+                {homePhase === 'intake' && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.4, ease: 'easeInOut' }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-5 pt-4 border-t border-[#D8C7A0]">
+                      <div className="text-center space-y-2">
+                        <div className="seal !w-auto !h-auto px-3 py-1 text-xs mx-auto">首陈其苦</div>
+                        <h3 className="text-2xl font-bold tracking-widest text-[#27251F]">先说哪里不舒服</h3>
+                        <p className="text-xs text-[#786650] tracking-wider leading-relaxed max-w-lg mx-auto">
+                          不必懂医学术语，也不必挑选选项。用平常的话讲清哪里难受、多久了、什么时候加重或减轻，
+                          先生们会先听您说完，再据此引出后面的四诊问答。
+                        </p>
+                      </div>
+
+                      <div className="paper-card p-5 md:p-6 space-y-4 shadow-paper">
+                        <textarea
+                          value={chiefComplaint}
+                          onChange={(e) => setChiefComplaint(e.target.value)}
+                          rows={6}
+                          maxLength={2000}
+                          placeholder="例如：最近半个月总是后脖子发紧、肩膀酸沉，吹空调就怕是风，身上微微出汗，晚上睡得浅，白天没力气。"
+                          className="w-full bg-[#FBF5E6] border border-[#D8C7A0] rounded-sm p-4 text-sm leading-loose tracking-wide text-[#27251F] placeholder:text-[#A99878] focus:outline-none focus:border-[#9B4B3E] resize-none font-serif"
+                        />
+                        <div className="flex items-center justify-between text-[11px] text-[#786650] font-sans">
+                          <span>已述 {chiefComplaint.length} 字 · 说得越具体，先生越能对证</span>
+                          {chiefComplaint && (
+                            <button onClick={() => setChiefComplaint('')} className="hover:text-[#9B4B3E] transition-colors">
+                              清空重写
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <span className="text-[11px] text-[#786650] font-sans self-center mr-1">一时不知从何说起？</span>
+                          {[
+                            '怕冷还是怕热，手脚温凉',
+                            '睡眠与精神如何',
+                            '吃饭与二便情况',
+                            '身上哪里疼、怎么个疼法'
+                          ].map((hint) => (
+                            <button
+                              key={hint}
+                              onClick={() =>
+                                setChiefComplaint((prev) => (prev ? `${prev}；${hint}：` : `${hint}：`))
+                              }
+                              className="text-[11px] px-2.5 py-1 border border-[#385B62]/30 text-[#385B62] bg-[#F5EED9] hover:bg-[#E8DEC0] rounded-sm transition-colors font-sans"
+                            >
+                              {hint}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <label className="flex items-center gap-2 text-xs text-[#786650] font-sans">
+                          <span className="tracking-wider">常住地</span>
+                          <input
+                            value={locality}
+                            onChange={(e) => setLocality(e.target.value)}
+                            className="w-28 bg-[#FBF5E6] border border-[#D8C7A0] rounded-sm px-2.5 py-1.5 text-xs text-[#27251F] focus:outline-none focus:border-[#9B4B3E] font-serif"
+                            placeholder="例：郑州"
+                          />
+                          <span className="text-[11px] text-[#A99878]">方土不同，用药有异</span>
+                        </label>
+
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => {
+                              const seed: Record<string, string> = {}
+                              if (chiefComplaint.trim()) seed['主诉'] = chiefComplaint.trim()
+                              if (locality.trim()) seed['常住地'] = locality.trim()
+                              if (Object.keys(seed).length) setFacts(seed)
+                              setView('selection')
+                            }}
+                            className="text-xs text-[#786650] hover:text-[#9B4B3E] tracking-widest transition-colors font-sans"
+                          >
+                            跳过，直接问答
+                          </button>
+                          <button
+                            onClick={analyzeComplaint}
+                            disabled={intakeLoading}
+                            className="ink-button text-sm tracking-widest disabled:opacity-50"
+                          >
+                            {intakeLoading ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                <span>先生正在听诊…</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>呈述完毕 · 请先生听诊</span>
+                                <ArrowRight className="w-4 h-4" />
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {intakeError && (
+                        <p className="text-xs text-[#9B4B3E] text-center font-sans">{intakeError}</p>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           )}
 
@@ -296,17 +447,77 @@ export function App() {
                 <div className="seal !w-auto !h-auto px-3 py-1 text-xs mx-auto mb-2">五脉流芳</div>
                 <h3 className="text-3xl font-bold tracking-widest text-[#27251F]">择定引诊先生</h3>
                 <p className="text-xs text-[#786650] tracking-wider">
-                  先生将引领四诊叩问。至终局推演，五大学派皆会一同登堂会诊、各陈方策。
+                  {intake
+                    ? '先生已记下您的陈述。可依建议择一门派，也可自行另择。至终局推演，六大学派皆会登堂会诊。'
+                    : '先生将引领四诊叩问。至终局推演，六大学派皆会一同登堂会诊、各陈方策。'}
                 </p>
               </div>
 
+              {intake && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="border border-[#385B62]/35 bg-[#F5EED9]/80 p-6 shadow-paper space-y-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="seal !w-7 !h-7 !text-[13px]">诊</span>
+                    <span className="text-sm font-semibold tracking-widest text-[#385B62]">先生听诊记</span>
+                    <span className="text-[11px] text-[#8C7A65] font-sans ml-auto">
+                      {intake.engine === 'llm' ? '智能解析' : '简式记录'}
+                    </span>
+                  </div>
+
+                  <p className="text-sm leading-relaxed text-[#27251F] font-serif border-l-2 border-[#9B4B3E]/40 pl-4">
+                    {intake.summary}
+                  </p>
+
+                  {intake.clues.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] text-[#786650] font-sans">已辨线索</span>
+                      {intake.clues.map((clue) => (
+                        <span
+                          key={clue}
+                          className="text-[11px] px-2.5 py-1 border border-[#9B4B3E]/40 text-[#9B4B3E] bg-[#FBF5E6] rounded-sm font-sans"
+                        >
+                          {clue}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {intake.reason && (
+                    <p className="text-xs text-[#5E4F3E] leading-relaxed font-sans">
+                      <span className="text-[#385B62] font-semibold">荐诊理由：</span>
+                      {intake.reason}
+                    </p>
+                  )}
+
+                  <button
+                    onClick={() => setView('home')}
+                    className="inline-flex items-center gap-2 text-[11px] text-[#786650] hover:text-[#9B4B3E] transition-colors font-sans"
+                  >
+                    <ArrowLeft className="w-3 h-3" />
+                    <span>补述或修改我的陈述</span>
+                  </button>
+                </motion.div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {schools.map((s) => (
+                {schools.map((s) => {
+                  const recommended = !!intake && intake.school === s.id
+                  return (
                   <div
                     key={s.id}
                     onClick={() => startConsultation(s)}
-                    className="group border border-[#D8C7A0] bg-[#F7EED9]/60 hover:bg-[#FFFBF0] p-6 cursor-pointer shadow-paper transition-all relative overflow-hidden flex flex-col justify-between"
+                    className={`group border bg-[#F7EED9]/60 hover:bg-[#FFFBF0] p-6 cursor-pointer shadow-paper transition-all relative overflow-hidden flex flex-col justify-between ${
+                      recommended ? 'border-2 border-[#9B4B3E] ring-1 ring-[#9B4B3E]/25' : 'border-[#D8C7A0]'
+                    }`}
                   >
+                    {recommended && (
+                      <div className="absolute top-0 right-0 bg-[#9B4B3E] text-[#F8EDCF] text-[10px] px-3 py-1 tracking-widest font-sans">
+                        先生荐诊
+                      </div>
+                    )}
                     <div className="border-b border-[#D8C7A0]/70 pb-3 mb-4 flex items-center justify-between">
                       <span className="text-xs font-semibold px-2.5 py-0.5 border border-[#9B4B3E] text-[#9B4B3E]">
                         {s.title}
@@ -327,7 +538,8 @@ export function App() {
                       <span className="group-hover:translate-x-1 transition-transform">→</span>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </motion.div>
           )}
@@ -350,6 +562,18 @@ export function App() {
                 <div className="absolute bottom-2 right-2 text-[#C0AE88] text-[10px]">』</div>
 
                 <div>
+                  {/* 主诉回执：让患者知道陈述已被记住 */}
+                  {facts['主诉'] && (
+                    <div className="mb-5 border border-[#385B62]/25 bg-[#F5EED9]/60 px-4 py-2.5 flex items-start gap-2.5">
+                      <span className="text-[10px] text-[#385B62] border border-[#385B62]/40 px-1.5 py-0.5 shrink-0 mt-0.5 font-sans">
+                        主诉
+                      </span>
+                      <p className="text-[11px] leading-relaxed text-[#5E4F3E] font-serif line-clamp-2">
+                        {facts['主诉']}
+                      </p>
+                    </div>
+                  )}
+
                   {/* 分卷标识 */}
                   <div className="flex items-center justify-between border-b border-[#D8C7A0] pb-3 mb-6 text-xs text-[#7B6852]">
                     <div className="flex items-center gap-2">
@@ -357,6 +581,11 @@ export function App() {
                       <span className="font-bold text-sm tracking-widest text-[#27251F]">
                         第 {currentModIdx + 1} 卷 · {currentModule.module}
                       </span>
+                      {intake?.focus_modules?.includes(currentModule.module) && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-[#9B4B3E] text-[#F8EDCF] tracking-widest font-sans">
+                          据主诉重点
+                        </span>
+                      )}
                     </div>
                     <span className="font-sans text-[11px] text-[#8C7A65]">
                       第 {currentQIdx + 1} 条 / 共 {currentModule.questions.length} 条
@@ -621,6 +850,17 @@ export function App() {
                         </div>
                       </div>
 
+                      {finalReport.formula_detail && (
+                        <div className="mt-3 pt-3 border-t border-[#E0D0B0]">
+                          <p className="text-xs text-[#7D6B55] font-semibold mb-1.5">【方药组成（须医师复核）】</p>
+                          <div className="bg-[#F5EED9] border border-[#D8C7A0] rounded-sm p-3">
+                            <p className="text-sm text-[#27251F] leading-loose font-serif tracking-wide whitespace-pre-wrap">
+                              {finalReport.formula_detail}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
                       {finalReport.modifications && (
                         <div className="mt-4 pt-4 border-t border-[#E0D0B0]">
                           <p className="text-xs text-[#7D6B55] font-semibold mb-1">【随症加减意向】</p>
@@ -628,6 +868,50 @@ export function App() {
                         </div>
                       )}
                     </div>
+
+                    {/* 多维调摄方案 */}
+                    {(finalReport.acupressure || finalReport.diet || finalReport.lifestyle || finalReport.emotional || finalReport.precautions) && (
+                      <div className="border border-[#D8C7A0] bg-[#FFFBF2] p-7 shadow-paper space-y-4">
+                        <h4 className="font-bold text-sm tracking-widest text-[#27251F] border-b border-[#E6D7B5] pb-2">
+                          【调摄全篇】
+                        </h4>
+
+                        {finalReport.acupressure && (
+                          <div className="space-y-1">
+                            <span className="text-xs font-bold text-[#385B62] tracking-wider">◈ 外治针灸</span>
+                            <p className="text-xs text-[#4F4132] leading-relaxed pl-3 whitespace-pre-wrap">{finalReport.acupressure}</p>
+                          </div>
+                        )}
+
+                        {finalReport.diet && (
+                          <div className="space-y-1">
+                            <span className="text-xs font-bold text-[#385B62] tracking-wider">◈ 饮食调理</span>
+                            <p className="text-xs text-[#4F4132] leading-relaxed pl-3 whitespace-pre-wrap">{finalReport.diet}</p>
+                          </div>
+                        )}
+
+                        {finalReport.lifestyle && (
+                          <div className="space-y-1">
+                            <span className="text-xs font-bold text-[#385B62] tracking-wider">◈ 起居作息</span>
+                            <p className="text-xs text-[#4F4132] leading-relaxed pl-3 whitespace-pre-wrap">{finalReport.lifestyle}</p>
+                          </div>
+                        )}
+
+                        {finalReport.emotional && (
+                          <div className="space-y-1">
+                            <span className="text-xs font-bold text-[#385B62] tracking-wider">◈ 情志调摄</span>
+                            <p className="text-xs text-[#4F4132] leading-relaxed pl-3 whitespace-pre-wrap">{finalReport.emotional}</p>
+                          </div>
+                        )}
+
+                        {finalReport.precautions && (
+                          <div className="space-y-1 pt-3 border-t border-[#E6D7B5]">
+                            <span className="text-xs font-bold text-[#9B4B3E] tracking-wider">◈ 注意禁忌</span>
+                            <p className="text-xs text-[#4F4132] leading-relaxed pl-3 whitespace-pre-wrap">{finalReport.precautions}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* 病机阐微 */}
                     <div className="border border-[#D8C7A0] bg-[#FFFBF2] p-7 shadow-paper space-y-2">
@@ -723,8 +1007,12 @@ export function App() {
                       <div className="space-y-2.5">
                         <div className="flex items-center justify-between border-b border-[#E0D0B0] pb-2">
                           <span className="font-bold text-base text-[#27251F]">{op.title}</span>
-                          <span className="seal !w-auto !h-auto px-2 py-0.5 !text-[10px]">
-                            {op.source === 'llm' ? '深度推理' : '经典规则'}
+                          <span
+                            className={`seal !w-auto !h-auto px-2 py-0.5 !text-[10px] ${
+                              op.source === 'llm' ? '' : '!border-[#AA7B43] !text-[#AA7B43]'
+                            }`}
+                          >
+                            {op.source === 'llm' ? '深度推理' : '规则兜底'}
                           </span>
                         </div>
                         <p className="text-[11px] text-[#7D6B55] tracking-wider">{op.name} 著札</p>

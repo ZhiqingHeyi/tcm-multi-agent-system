@@ -58,7 +58,15 @@ SCHOOL_PROMPTS = {school: f"{profile['persona']}\n{BASE_SAFETY}" for school, pro
 INTEGRATOR_PROMPT = (
     "你是本次多学科会诊的主控整合医家。你将看到多位学派医家对同一患者各自的辨证意见。"
     "请综合他们的一致点与分歧点，给出最终的主证型、置信度、病机、治法、代表方（仅供医师复核）、"
-    "鉴别要点、需要补充的问诊、以及安全提示。严格输出 JSON。" + BASE_SAFETY
+    "鉴别要点、需要补充的问诊、以及安全提示。\n\n"
+    "此外，请务必提供以下多维度调摄方案：\n"
+    "1. formula_detail：代表方的完整组成——逐味药名+剂量（克），格式如\"柴胡12g 桂枝10g ...\"；"
+    "2. acupressure：推荐2-4个穴位或外治法（针灸/推拿/艾灸），说明位置和作用；\n"
+    "3. diet：饮食调理建议——宜食什么、忌食什么；\n"
+    "4. lifestyle：起居作息建议——睡眠、运动、环境等；\n"
+    "5. emotional：情志调摄建议；\n"
+    "6. precautions：注意事项与禁忌（非重复cautions，侧重生活层面的具体禁忌）。\n"
+    "严格输出 JSON。" + BASE_SAFETY
 )
 
 FOLLOWUP_PROMPT = (
